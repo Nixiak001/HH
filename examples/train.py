@@ -40,8 +40,9 @@ def main():
             "dexhands",
             "smacv2",
             "lag",
+            "humanplus",
         ],
-        help="Environment name. Choose from: smac, mamujoco, pettingzoo_mpe, gym, football, dexhands, smacv2, lag.",
+        help="Environment name. Choose from: smac, mamujoco, pettingzoo_mpe, gym, football, dexhands, smacv2, lag, humanplus.",
     )
     parser.add_argument(
         "--exp_name", type=str, default="installtest", help="Experiment name."
@@ -75,13 +76,18 @@ def main():
         algo_args, env_args = get_defaults_yaml_args(args["algo"], args["env"])
     update_args(unparsed_dict, algo_args, env_args)  # update args from command line
 
-    if args["env"] == "dexhands":
+    # IsaacGym environments need isaacgym imported before PyTorch
+    if args["env"] in ["dexhands", "humanplus"]:
         import isaacgym  # isaacgym has to be imported before PyTorch
 
     # note: isaac gym does not support multiple instances, thus cannot eval separately
     if args["env"] == "dexhands":
         algo_args["eval"]["use_eval"] = False
         algo_args["train"]["episode_length"] = env_args["hands_episode_length"]
+    
+    if args["env"] == "humanplus":
+        algo_args["eval"]["use_eval"] = False
+        algo_args["train"]["episode_length"] = env_args.get("episode_length", 1000)
 
     # start training
     from harl.runners import RUNNER_REGISTRY
