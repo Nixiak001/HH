@@ -53,7 +53,7 @@
     },
     "render": {
       "render_episodes": 20,
-      "use_render": true
+      "use_render": false
     },
     "seed": {
       "seed": 1,
@@ -63,7 +63,7 @@
       "episode_length": 2000,
       "eval_interval": 100,
       "log_interval": 20,
-      "model_dir": "/home/aiboy/lkx/HARL/examples/results/mamujoco/Humanoid-v2-17x1/happo/alternation_training/seed-00001-2025-11-16-09-48-52/models",
+      "model_dir": null,
       "n_rollout_threads": 20,
       "num_env_steps": 100000000,
       "use_linear_lr_decay": true,
