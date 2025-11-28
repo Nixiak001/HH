@@ -137,6 +137,11 @@ class HumanPlusEnv:
             # Update config with custom settings
             H1RoughCfg.env.num_envs = self.n_envs
             
+            # Store config for later use
+            self.hst_cfg = H1RoughCfg
+            self.obs_context_len = H1RoughCfg.env.obs_context_len  # Usually 8
+            self.num_obs = H1RoughCfg.env.num_observations  # Usually 84
+            
             # Create H1 environment
             env = H1(
                 cfg=H1RoughCfg,
@@ -146,11 +151,16 @@ class HumanPlusEnv:
                 headless=self.headless
             )
             
+            # Update num_dofs from actual environment
+            self.num_dofs = env.num_dofs if hasattr(env, 'num_dofs') else 19
+            
             return env
             
         except ImportError as e:
             print(f"Warning: Could not import humanplus HST environment: {e}")
             print("Creating mock environment for development/testing...")
+            self.obs_context_len = 8
+            self.num_obs = 84
             return self._create_mock_env()
     
     def _create_mock_env(self):
@@ -161,47 +171,51 @@ class HumanPlusEnv:
             Mock environment object
         """
         class MockHSTEnv:
-            def __init__(self, num_envs, num_dofs, device):
+            def __init__(self, num_envs, num_dofs, device, obs_context_len=8, num_obs=84):
                 self.num_envs = num_envs
                 self.num_dofs = num_dofs
                 self.device = device
-                self.num_obs = 84  # Same as HST observation dimension
+                self.num_obs = num_obs
+                self.obs_context_len = obs_context_len
                 
                 # Mock state tensors
                 self.obs_buf = torch.zeros(num_envs, self.num_obs, device=device)
+                self.obs_history_buf = torch.zeros(num_envs, obs_context_len, num_obs, device=device)
                 self.rew_buf = torch.zeros(num_envs, device=device)
                 self.reset_buf = torch.zeros(num_envs, dtype=torch.long, device=device)
                 self.dof_pos = torch.zeros(num_envs, num_dofs, device=device)
-                self.default_dof_pos = torch.zeros(num_dofs, device=device)
+                self.default_dof_pos = torch.zeros(1, num_dofs, device=device)
+                self.target_jt = torch.zeros(num_envs, num_dofs, device=device)
+                self.delayed_obs_target_jt = torch.zeros(num_envs, num_dofs, device=device)
                 
             def reset(self):
                 self.obs_buf = torch.randn(self.num_envs, self.num_obs, device=self.device) * 0.1
-                obs_history = self.obs_buf.unsqueeze(1).repeat(1, 8, 1)  # context_len=8
-                return obs_history, None
+                self.obs_history_buf = self.obs_buf.unsqueeze(1).repeat(1, self.obs_context_len, 1)
+                return self.obs_history_buf, None
             
             def step(self, actions):
                 # Simulate one step
                 self.obs_buf = torch.randn(self.num_envs, self.num_obs, device=self.device) * 0.1
-                obs_history = self.obs_buf.unsqueeze(1).repeat(1, 8, 1)
+                self.obs_history_buf = torch.cat([
+                    self.obs_history_buf[:, 1:],
+                    self.obs_buf.unsqueeze(1)
+                ], dim=1)
                 self.rew_buf = torch.ones(self.num_envs, device=self.device) * 0.1
                 self.reset_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
                 extras = {}
-                return obs_history, None, self.rew_buf, self.reset_buf, extras
-            
-            def set_target_jt(self, target_jt):
-                """Set the target joint positions from upper-level policy."""
-                self.target_jt = target_jt
+                return self.obs_history_buf, None, self.rew_buf, self.reset_buf, extras
                 
             def render(self):
                 pass
         
-        return MockHSTEnv(self.n_envs, self.num_dofs, self.device)
+        obs_context_len = getattr(self, 'obs_context_len', 8)
+        num_obs = getattr(self, 'num_obs', 84)
+        return MockHSTEnv(self.n_envs, self.num_dofs, self.device, obs_context_len, num_obs)
     
     def _setup_spaces(self):
         """Setup observation and action spaces for HARL interface."""
-        # Observation space: HST observation (84 dim) 
-        # Components: base_orn_rp(2) + ang_vel(3) + commands(3) + dof_pos(19) + dof_vel(19) + actions(19) + target_jt(19)
-        obs_dim = 84
+        # Get observation dimension from environment or use default
+        obs_dim = getattr(self, 'num_obs', 84)  # HST observation dimension
         
         # For upper-level HH policy, we can use the same observation
         # or a subset focused on task-relevant information
@@ -268,13 +282,27 @@ class HumanPlusEnv:
         self.current_step = 0
         
         # Reset HST environment
-        obs_history, _ = self.env.reset()
+        # HST reset() returns (obs_history_buf, privileged_obs)
+        reset_result = self.env.reset()
+        
+        # Handle different return formats
+        if isinstance(reset_result, tuple):
+            obs_history = reset_result[0]
+        else:
+            obs_history = reset_result
         
         # Get the last observation from history
+        # obs_history shape: (n_envs, context_len, obs_dim) or (n_envs, obs_dim)
         if isinstance(obs_history, torch.Tensor):
-            obs = _t2n(obs_history[:, -1, :])  # Take last timestep
+            if obs_history.dim() == 3:
+                obs = _t2n(obs_history[:, -1, :])  # Take last timestep
+            else:
+                obs = _t2n(obs_history)  # Already single frame
         else:
-            obs = obs_history[:, -1, :]
+            if len(obs_history.shape) == 3:
+                obs = obs_history[:, -1, :]
+            else:
+                obs = obs_history
         
         # Reshape for HARL interface: (n_envs, n_agents, obs_dim)
         obs = obs.reshape(self.n_envs, 1, -1)
@@ -310,10 +338,11 @@ class HumanPlusEnv:
             target_jt = actions[:, 0, :].float().to(self.device)
         
         # Set target joint positions in HST environment
-        if hasattr(self.env, 'set_target_jt'):
-            self.env.set_target_jt(target_jt)
-        elif hasattr(self.env, 'target_jt'):
+        # This replaces the target_jt that HST normally gets from npy files
+        if hasattr(self.env, 'target_jt'):
             self.env.target_jt = target_jt
+        if hasattr(self.env, 'delayed_obs_target_jt'):
+            self.env.delayed_obs_target_jt = target_jt
         
         # If using pretrained HST, get HST actions based on target poses
         if hasattr(self, 'hst_policy') and self.hst_policy is not None:
@@ -331,18 +360,33 @@ class HumanPlusEnv:
                 default_pos = self.env.default_dof_pos
                 if not isinstance(default_pos, torch.Tensor):
                     default_pos = torch.tensor(default_pos, device=self.device, dtype=torch.float32)
+                # Ensure it's the right shape for broadcasting
+                if default_pos.dim() == 1:
+                    default_pos = default_pos.unsqueeze(0)
             else:
-                default_pos = torch.zeros(self.num_dofs, device=self.device, dtype=torch.float32)
+                default_pos = torch.zeros(1, self.num_dofs, device=self.device, dtype=torch.float32)
             hst_actions = target_jt - default_pos
         
         # Step the HST environment with HST actions
-        obs_history, _, rewards, dones, extras = self.env.step(hst_actions)
+        # HST step() returns (obs_history_buf, privileged_obs, rew_buf, reset_buf, extras)
+        step_result = self.env.step(hst_actions)
+        obs_history = step_result[0]
+        rewards = step_result[2]
+        dones = step_result[3]
+        extras = step_result[4] if len(step_result) > 4 else {}
         
         # Convert outputs to numpy
+        # obs_history shape: (n_envs, context_len, obs_dim) or (n_envs, obs_dim)
         if isinstance(obs_history, torch.Tensor):
-            obs = _t2n(obs_history[:, -1, :])
+            if obs_history.dim() == 3:
+                obs = _t2n(obs_history[:, -1, :])  # Take last timestep
+            else:
+                obs = _t2n(obs_history)
         else:
-            obs = obs_history[:, -1, :]
+            if len(obs_history.shape) == 3:
+                obs = obs_history[:, -1, :]
+            else:
+                obs = obs_history
             
         if isinstance(rewards, torch.Tensor):
             rewards = _t2n(rewards)
