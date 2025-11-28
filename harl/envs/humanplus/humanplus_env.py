@@ -56,11 +56,13 @@ class HumanPlusEnv:
                 - use_pretrained_hst: Whether to use pretrained HST policy
                 - hst_checkpoint: Path to pretrained HST checkpoint
                 - episode_length: Maximum episode length
+                - num_dofs: Number of degrees of freedom (default: 19 for H1)
         """
         self.env_args = env_args
         self.n_envs = env_args.get("n_threads", 1)
         self.n_agents = 1  # Single humanoid agent
-        self.num_dofs = 19  # H1 robot has 19 DOFs
+        # H1 robot has 19 DOFs, but make it configurable
+        self.num_dofs = env_args.get("num_dofs", 19)
         
         # Device configuration
         self.device = env_args.get("device", "cuda:0")
@@ -230,8 +232,12 @@ class HumanPlusEnv:
         try:
             from rsl_rl.modules import ActorCriticTransformer
             
-            # Load the pretrained HST policy
-            checkpoint = torch.load(self.hst_checkpoint, map_location=self.device)
+            # Load the pretrained HST policy with weights_only for security
+            checkpoint = torch.load(
+                self.hst_checkpoint, 
+                map_location=self.device,
+                weights_only=True
+            )
             
             # Initialize HST policy network
             self.hst_policy = ActorCriticTransformer(
@@ -301,7 +307,7 @@ class HumanPlusEnv:
         if isinstance(actions, np.ndarray):
             target_jt = torch.from_numpy(actions[:, 0, :]).float().to(self.device)
         else:
-            target_jt = actions[:, 0, :].to(self.device)
+            target_jt = actions[:, 0, :].float().to(self.device)
         
         # Set target joint positions in HST environment
         if hasattr(self.env, 'set_target_jt'):
@@ -320,7 +326,14 @@ class HumanPlusEnv:
                     hst_actions = torch.zeros(self.n_envs, self.num_dofs, device=self.device)
         else:
             # Without pretrained HST, use target_jt directly as action offset
-            hst_actions = target_jt - (self.env.default_dof_pos if hasattr(self.env, 'default_dof_pos') else 0)
+            # Get default_dof_pos as tensor, or use zeros if not available
+            if hasattr(self.env, 'default_dof_pos') and self.env.default_dof_pos is not None:
+                default_pos = self.env.default_dof_pos
+                if not isinstance(default_pos, torch.Tensor):
+                    default_pos = torch.tensor(default_pos, device=self.device, dtype=torch.float32)
+            else:
+                default_pos = torch.zeros(self.num_dofs, device=self.device, dtype=torch.float32)
+            hst_actions = target_jt - default_pos
         
         # Step the HST environment with HST actions
         obs_history, _, rewards, dones, extras = self.env.step(hst_actions)
