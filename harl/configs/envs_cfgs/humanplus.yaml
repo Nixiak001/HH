@@ -1,0 +1,74 @@
+# HumanPlus HST Environment Configuration for HARL
+# This configuration is for the hierarchical HH-HST integration
+
+# Task configuration
+task: h1_walking  # Walking task with H1 humanoid
+
+# Path to humanplus installation (update this to your local path)
+humanplus_path: null  # Set to path like "/path/to/humanplus"
+
+# Simulation configuration
+headless: true  # Set to false for visualization
+device: "cuda:0"  # Use GPU for simulation
+
+# Episode configuration
+episode_length: 1000  # Maximum steps per episode
+
+# HST (lower-level) configuration
+use_pretrained_hst: true  # Use pretrained HST policy
+hst_checkpoint: null  # Path to HST checkpoint (e.g., "path/to/policy.pt")
+freeze_hst: true  # Freeze HST during upper-level training
+
+# Training phase configuration
+# Phase 1: Train HST independently (use humanplus/HST/legged_gym/scripts/train.py)
+# Phase 2: Train upper-level HH with frozen HST
+# Phase 3: Joint fine-tuning of both layers
+training_phase: 2
+
+# Upper-level (HH) action space configuration
+# HH outputs 19-dim joint position OFFSETS (not absolute positions)
+# Output 0 = maintain default pose, which makes training easier
+action_dim: 19
+action_scale: 0.5  # Action range: [-action_scale, action_scale], default [-0.5, 0.5] rad
+
+# Joint limits for H1 robot (radians)
+# These are used to clip the target joint positions
+joint_limits:
+  # Left leg
+  left_hip_yaw: [-0.43, 0.43]
+  left_hip_roll: [-0.43, 0.43]
+  left_hip_pitch: [-1.57, 1.57]
+  left_knee: [-0.26, 2.05]
+  left_ankle: [-0.87, 0.52]
+  # Right leg  
+  right_hip_yaw: [-0.43, 0.43]
+  right_hip_roll: [-0.43, 0.43]
+  right_hip_pitch: [-1.57, 1.57]
+  right_knee: [-0.26, 2.05]
+  right_ankle: [-0.87, 0.52]
+  # Torso
+  torso: [-2.35, 2.35]
+  # Left arm
+  left_shoulder_pitch: [-2.87, 2.87]
+  left_shoulder_roll: [-0.34, 3.11]
+  left_shoulder_yaw: [-1.3, 4.45]
+  left_elbow: [-1.25, 2.61]
+  # Right arm
+  right_shoulder_pitch: [-2.87, 2.87]
+  right_shoulder_roll: [-3.11, 0.34]
+  right_shoulder_yaw: [-4.45, 1.3]
+  right_elbow: [-2.61, 1.25]
+
+# Reward configuration
+# Task rewards are computed by the underlying HST environment
+# Additional upper-level rewards can be defined here
+use_task_reward: true  # Use HST's task reward
+reward_scale: 1.0  # Scale factor for rewards
+
+# Rendering configuration (for post-training visualization)
+render_config:
+  save_video: false
+  video_path: "videos/"
+  video_fps: 30
+  camera_position: [10, 0, 6]
+  camera_lookat: [11, 5, 3]
