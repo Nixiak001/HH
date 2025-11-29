@@ -8,10 +8,12 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                    上层: HH (HARL框架)                          │
 │  输入: 84维观测 (姿态、速度、关节状态等)                         │
-│  输出: 19维目标关节位置                                          │
+│  输出: 19维关节位置偏移量 (相对于默认位姿)                       │
+│  动作范围: [-0.5, 0.5] rad (可配置)                              │
 │  算法: HAPPO/HATRPO/HASAC等                                     │
 └──────────────────────────────┬──────────────────────────────────┘
-                               │ target_jt (19维)
+                               │ action_offset (19维)
+                               │ target_jt = default_pos + offset
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │              下层: HST (Humanoid Shadowing Transformer)         │
@@ -27,6 +29,13 @@
 │  返回: obs, reward, done                                         │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+## 关键设计：动作空间为偏移量
+
+上层策略输出的是**相对于默认位姿的偏移量**，而非绝对关节角度：
+- `target_jt = default_dof_pos + action_offset`
+- 输出0表示保持默认位姿（站立）
+- 这使得训练更容易，因为策略从"不动"开始学习
 
 ## 训练流程
 
@@ -50,12 +59,17 @@ python scripts/train.py --run_name hst_pretrain --headless --sim_device cuda:0 -
 ```bash
 cd /path/to/HH/examples
 
-# 使用HAPPO算法训练
+# 使用HAPPO算法训练（动作为偏移量，范围[-0.5, 0.5]）
 python train.py --algo happo --env humanplus --exp_name hh_upper_layer \
     --humanplus_path /path/to/humanplus \
     --headless true \
     --use_pretrained_hst false \
     --training_phase 2
+
+# 可选：调整动作范围（更小的范围=更保守的动作）
+python train.py --algo happo --env humanplus --exp_name hh_upper_layer \
+    --humanplus_path /path/to/humanplus \
+    --action_scale 0.3
 
 # 或使用其他算法
 python train.py --algo hasac --env humanplus --exp_name hh_upper_hasac

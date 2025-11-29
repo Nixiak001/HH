@@ -26,8 +26,10 @@ freeze_hst: true  # Freeze HST during upper-level training
 training_phase: 2
 
 # Upper-level (HH) action space configuration
-# HH outputs 19-dim target joint positions
+# HH outputs 19-dim joint position OFFSETS (not absolute positions)
+# Output 0 = maintain default pose, which makes training easier
 action_dim: 19
+action_scale: 0.5  # Action range: [-action_scale, action_scale], default [-0.5, 0.5] rad
 
 # Joint limits for H1 robot (radians)
 # These are used to clip the target joint positions

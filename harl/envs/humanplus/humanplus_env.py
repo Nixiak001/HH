@@ -224,10 +224,13 @@ class HumanPlusEnv:
             for _ in range(self.n_agents)
         ]
         
-        # Action space: 19-dim target joint positions
-        # These will be passed to HST as target_jt
+        # Action space: 19-dim OFFSET from default joint positions
+        # Using smaller range [-0.5, 0.5] for easier training
+        # Output 0 = default pose, which is a reasonable starting point
+        action_scale = self.env_args.get("action_scale", 0.5)
+        self.action_scale = action_scale
         self.action_space = [
-            spaces.Box(low=-np.pi, high=np.pi, shape=(self.num_dofs,), dtype=np.float32)
+            spaces.Box(low=-action_scale, high=action_scale, shape=(self.num_dofs,), dtype=np.float32)
             for _ in range(self.n_agents)
         ]
         
@@ -314,11 +317,13 @@ class HumanPlusEnv:
         """
         Execute one environment step.
         
-        The actions from the upper-level HH policy are interpreted as target
-        joint positions and passed to the HST controller.
+        The actions from the upper-level HH policy are interpreted as OFFSETS
+        from the default joint positions and passed to the HST controller.
         
         Args:
-            actions: Target joint positions from HH policy, shape (n_envs, n_agents, 19)
+            actions: Joint position offsets from HH policy, shape (n_envs, n_agents, 19)
+                     Range: [-action_scale, action_scale], typically [-0.5, 0.5]
+                     Output 0 means default pose
             
         Returns:
             obs: Next observations, shape (n_envs, n_agents, obs_dim)
@@ -333,9 +338,24 @@ class HumanPlusEnv:
         # Convert actions to torch tensor if needed
         # actions shape: (n_envs, n_agents, 19) -> (n_envs, 19)
         if isinstance(actions, np.ndarray):
-            target_jt = torch.from_numpy(actions[:, 0, :]).float().to(self.device)
+            action_offsets = torch.from_numpy(actions[:, 0, :]).float().to(self.device)
         else:
-            target_jt = actions[:, 0, :].float().to(self.device)
+            action_offsets = actions[:, 0, :].float().to(self.device)
+        
+        # Get default joint positions
+        if hasattr(self.env, 'default_dof_pos') and self.env.default_dof_pos is not None:
+            default_pos = self.env.default_dof_pos
+            if not isinstance(default_pos, torch.Tensor):
+                default_pos = torch.tensor(default_pos, device=self.device, dtype=torch.float32)
+            # Ensure it's the right shape for broadcasting
+            if default_pos.dim() == 1:
+                default_pos = default_pos.unsqueeze(0)
+        else:
+            default_pos = torch.zeros(1, self.num_dofs, device=self.device, dtype=torch.float32)
+        
+        # Compute target joint positions: default + offset
+        # This makes training easier as output=0 means default pose
+        target_jt = default_pos + action_offsets
         
         # Set target joint positions in HST environment
         # This replaces the target_jt that HST normally gets from npy files
@@ -354,18 +374,9 @@ class HumanPlusEnv:
                 else:
                     hst_actions = torch.zeros(self.n_envs, self.num_dofs, device=self.device)
         else:
-            # Without pretrained HST, use target_jt directly as action offset
-            # Get default_dof_pos as tensor, or use zeros if not available
-            if hasattr(self.env, 'default_dof_pos') and self.env.default_dof_pos is not None:
-                default_pos = self.env.default_dof_pos
-                if not isinstance(default_pos, torch.Tensor):
-                    default_pos = torch.tensor(default_pos, device=self.device, dtype=torch.float32)
-                # Ensure it's the right shape for broadcasting
-                if default_pos.dim() == 1:
-                    default_pos = default_pos.unsqueeze(0)
-            else:
-                default_pos = torch.zeros(1, self.num_dofs, device=self.device, dtype=torch.float32)
-            hst_actions = target_jt - default_pos
+            # Without pretrained HST, use action_offsets directly as HST input
+            # HST expects action = target_jt - default_dof_pos (which is just the offset)
+            hst_actions = action_offsets
         
         # Step the HST environment with HST actions
         # HST step() returns (obs_history_buf, privileged_obs, rew_buf, reset_buf, extras)
