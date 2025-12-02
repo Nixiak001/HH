@@ -249,12 +249,22 @@ class HumanPlusEnv:
         try:
             from rsl_rl.modules import ActorCriticTransformer
             
-            # Load the pretrained HST policy with weights_only for security
-            checkpoint = torch.load(
-                self.hst_checkpoint, 
-                map_location=self.device,
-                weights_only=True
-            )
+            # Try loading with weights_only=True first for security,
+            # but fall back to weights_only=False for older checkpoints
+            try:
+                checkpoint = torch.load(
+                    self.hst_checkpoint, 
+                    map_location=self.device,
+                    weights_only=True
+                )
+            except Exception:
+                # Fallback for older checkpoints that may contain non-tensor objects
+                print("Note: Loading checkpoint with weights_only=False (older format)")
+                checkpoint = torch.load(
+                    self.hst_checkpoint, 
+                    map_location=self.device,
+                    weights_only=False
+                )
             
             # Initialize HST policy network
             self.hst_policy = ActorCriticTransformer(
@@ -267,10 +277,11 @@ class HumanPlusEnv:
             self.hst_policy.load_state_dict(checkpoint['model_state_dict'])
             self.hst_policy.eval()
             
-            print(f"Loaded pretrained HST from {self.hst_checkpoint}")
+            print(f"Successfully loaded pretrained HST from {self.hst_checkpoint}")
             
         except Exception as e:
             print(f"Warning: Could not load pretrained HST: {e}")
+            print("Training will proceed without pretrained HST (upper-level only)")
             self.hst_policy = None
     
     def reset(self):
