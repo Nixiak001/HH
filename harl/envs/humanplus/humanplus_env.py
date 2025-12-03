@@ -143,6 +143,15 @@ class HumanPlusEnv:
             # Update config with custom settings
             H1RoughCfg.env.num_envs = self.n_envs
             
+            # CRITICAL FIX: Disable target_jt reward during hierarchical training!
+            # The target_jt reward penalizes deviation from the npy trajectory,
+            # which conflicts with HH learning its own control strategy.
+            # Only keep task-relevant rewards (tracking_lin_vel, tracking_ang_vel).
+            disable_target_jt = env_args.get("disable_target_jt_reward", True)
+            if disable_target_jt:
+                H1RoughCfg.rewards.scales.target_jt = 0.0
+                print("Disabled target_jt reward for hierarchical training")
+            
             # Store config for later use
             self.hst_cfg = H1RoughCfg
             self.obs_context_len = H1RoughCfg.env.obs_context_len  # Usually 8

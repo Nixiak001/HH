@@ -65,6 +65,12 @@ joint_limits:
 use_task_reward: true  # Use HST's task reward
 reward_scale: 1.0  # Scale factor for rewards
 
+# CRITICAL: Disable target_jt reward during hierarchical training (Phase 2)
+# The target_jt reward penalizes deviation from the npy trajectory file,
+# which conflicts with HH learning its own control strategy.
+# When true (default), only task rewards (tracking_lin_vel, tracking_ang_vel) are used.
+disable_target_jt_reward: true
+
 # Rendering configuration (for post-training visualization)
 render_config:
   save_video: false

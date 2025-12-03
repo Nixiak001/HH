@@ -180,11 +180,22 @@ python train.py --algo happo --env humanplus --exp_name render_test \
 
 使用HST环境中定义的任务奖励:
 
-- `tracking_lin_vel`: 线速度跟踪奖励
-- `tracking_ang_vel`: 角速度跟踪奖励
-- `target_jt`: 目标关节位置跟踪奖励
+- `tracking_lin_vel`: 线速度跟踪奖励 (**阶段2主要优化目标**)
+- `tracking_ang_vel`: 角速度跟踪奖励 (**阶段2主要优化目标**)
+- `target_jt`: 目标关节位置跟踪奖励 (**阶段2时自动禁用！**)
 - `feet_air_time`: 步态奖励
 - 各种惩罚项: 力矩、碰撞、关节限位等
+
+**重要**: 在分层训练阶段2中，`target_jt`奖励会自动禁用。这是因为：
+- `target_jt`奖励惩罚机器人关节偏离npy轨迹文件中的目标位置
+- 当HH学习输出自己的控制策略时，这会导致奖励持续下降
+- 禁用后，HH只根据任务目标（`tracking_lin_vel`, `tracking_ang_vel`）学习
+
+如需手动启用/禁用，可以设置:
+```bash
+--disable_target_jt_reward false  # 启用target_jt奖励
+--disable_target_jt_reward true   # 禁用（默认）
+```
 
 ## 文件结构
 
