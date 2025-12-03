@@ -4,13 +4,16 @@ HumanPlus HST Environment Wrapper for HARL.
 This module provides the integration between HH (HARL) upper-level policy 
 and HumanPlus HST (Humanoid Shadowing Transformer) lower-level controller.
 
-Architecture:
-    Upper Layer (HH/HARL): Outputs 19-dim target joint positions
-    Lower Layer (HST): Receives target poses + proprioception, outputs joint torques
+Architecture (Residual Policy Learning):
+    Upper Layer (HH/HARL): Outputs 19-dim action CORRECTIONS
+    Lower Layer (HST): Generates baseline actions from pretrained policy
+    Combined: final_action = HST_baseline + HH_correction
     Simulation: IsaacGym physics simulation
 
-The upper-level HH policy learns to output target joint positions that the 
-pre-trained HST controller can track to accomplish walking tasks.
+The upper-level HH policy learns to output corrections that improve upon
+the pretrained HST controller's baseline behavior. This residual learning
+approach allows HH to leverage HST's stable baseline while learning task-
+specific improvements.
 """
 
 import torch
@@ -30,16 +33,19 @@ class HumanPlusEnv:
     This environment wraps the HST (Humanoid Shadowing Transformer) environment
     from humanplus and exposes it to the HARL multi-agent RL framework.
     
-    The key modification is that instead of loading target joint trajectories
-    from pre-recorded files, the target joints come from the upper-level HARL
-    policy output.
+    The key design is RESIDUAL POLICY LEARNING:
+    - HST policy generates stable baseline actions
+    - HH policy outputs corrections/modifications to these actions
+    - Final action = HST_baseline + HH_correction
+    
+    This allows HH to learn improvements while maintaining HST's stability.
     
     Attributes:
         n_envs: Number of parallel environments
         n_agents: Number of agents (1 for single humanoid)
         num_dofs: Number of degrees of freedom (19 for H1 robot)
         observation_space: Observation space for each agent
-        action_space: Action space for each agent (19-dim target joint positions)
+        action_space: Action space for each agent (19-dim action corrections)
         share_observation_space: Shared observation space
     """
     
@@ -224,9 +230,9 @@ class HumanPlusEnv:
             for _ in range(self.n_agents)
         ]
         
-        # Action space: 19-dim OFFSET from default joint positions
-        # Using smaller range [-0.5, 0.5] for easier training
-        # Output 0 = default pose, which is a reasonable starting point
+        # Action space: 19-dim action CORRECTIONS on top of HST baseline
+        # Using smaller range [-0.5, 0.5] for stable learning
+        # Output 0 = use HST's baseline action unchanged
         action_scale = self.env_args.get("action_scale", 0.5)
         self.action_scale = action_scale
         self.action_space = [
@@ -384,13 +390,12 @@ class HumanPlusEnv:
         """
         Execute one environment step.
         
-        The actions from the upper-level HH policy are interpreted as OFFSETS
-        from the default joint positions and passed to the HST controller.
+        NEW APPROACH: HH outputs action CORRECTIONS on top of HST's base actions.
+        This allows HH to learn while leveraging HST's stable baseline behavior.
         
         Args:
-            actions: Joint position offsets from HH policy, shape (n_envs, n_agents, 19)
-                     Range: [-action_scale, action_scale], typically [-0.5, 0.5]
-                     Output 0 means default pose
+            actions: Action corrections from HH policy, shape (n_envs, n_agents, 19)
+                     These are ADDED to HST's baseline actions
             
         Returns:
             obs: Next observations, shape (n_envs, n_agents, obs_dim)
@@ -405,54 +410,30 @@ class HumanPlusEnv:
         # Convert actions to torch tensor if needed
         # actions shape: (n_envs, n_agents, 19) -> (n_envs, 19)
         if isinstance(actions, np.ndarray):
-            action_offsets = torch.from_numpy(actions[:, 0, :]).float().to(self.device)
+            action_corrections = torch.from_numpy(actions[:, 0, :]).float().to(self.device)
         else:
-            action_offsets = actions[:, 0, :].float().to(self.device)
+            action_corrections = actions[:, 0, :].float().to(self.device)
         
-        # Get default joint positions
-        if hasattr(self.env, 'default_dof_pos') and self.env.default_dof_pos is not None:
-            default_pos = self.env.default_dof_pos
-            if not isinstance(default_pos, torch.Tensor):
-                default_pos = torch.tensor(default_pos, device=self.device, dtype=torch.float32)
-            # Ensure it's the right shape for broadcasting
-            if default_pos.dim() == 1:
-                default_pos = default_pos.unsqueeze(0)
-        else:
-            default_pos = torch.zeros(1, self.num_dofs, device=self.device, dtype=torch.float32)
-        
-        # Compute target joint positions: default + offset
-        # This makes training easier as output=0 means default pose
-        target_jt = default_pos + action_offsets
-        
-        # Set target joint positions in HST environment
-        # This replaces the target_jt that HST normally gets from npy files
-        if hasattr(self.env, 'target_jt'):
-            self.env.target_jt = target_jt
-        if hasattr(self.env, 'delayed_obs_target_jt'):
-            self.env.delayed_obs_target_jt = target_jt
-        
-        # CRITICAL: Update the observation buffer to include the new target positions
-        # The HST observation vector includes delayed_obs_target_jt (19 dims)
-        # We need to manually update obs_buf with the new target before HST uses it
-        self._update_obs_with_target(target_jt)
-        
-        # If using pretrained HST, get HST actions based on target poses
+        # Get HST's baseline actions (the stable policy output)
         if hasattr(self, 'hst_policy') and self.hst_policy is not None:
             with torch.no_grad():
                 # Get observation history from environment
                 obs_history = self.env.obs_history_buf if hasattr(self.env, 'obs_history_buf') else None
                 if obs_history is not None:
-                    hst_actions = self.hst_policy.act_inference(obs_history)
+                    hst_base_actions = self.hst_policy.act_inference(obs_history)
                 else:
-                    hst_actions = torch.zeros(self.n_envs, self.num_dofs, device=self.device)
+                    hst_base_actions = torch.zeros(self.n_envs, self.num_dofs, device=self.device)
         else:
-            # Without pretrained HST, use action_offsets directly as HST input
-            # HST expects action = target_jt - default_dof_pos (which is just the offset)
-            hst_actions = action_offsets
+            # Without pretrained HST, use zero baseline
+            hst_base_actions = torch.zeros(self.n_envs, self.num_dofs, device=self.device)
         
-        # Step the HST environment with HST actions
+        # Combine HST baseline with HH corrections
+        # HH learns to output corrections that improve upon HST's baseline
+        final_actions = hst_base_actions + action_corrections
+        
+        # Step the HST environment with combined actions
         # HST step() returns (obs_history_buf, privileged_obs, rew_buf, reset_buf, extras)
-        step_result = self.env.step(hst_actions)
+        step_result = self.env.step(final_actions)
         obs_history = step_result[0]
         rewards = step_result[2]
         dones = step_result[3]
