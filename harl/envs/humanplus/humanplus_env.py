@@ -4,16 +4,20 @@ HumanPlus HST Environment Wrapper for HARL.
 This module provides the integration between HH (HARL) upper-level policy 
 and HumanPlus HST (Humanoid Shadowing Transformer) lower-level controller.
 
-Architecture (Residual Policy Learning):
-    Upper Layer (HH/HARL): Outputs 19-dim action CORRECTIONS
-    Lower Layer (HST): Generates baseline actions from pretrained policy
-    Combined: final_action = HST_baseline + HH_correction
+Architecture:
+    Upper Layer (HH/HARL): Outputs 19-dim target joint offsets from default pose
+    Lower Layer: IsaacGym PD controller (not using HST policy during training)
     Simulation: IsaacGym physics simulation
 
-The upper-level HH policy learns to output corrections that improve upon
-the pretrained HST controller's baseline behavior. This residual learning
-approach allows HH to leverage HST's stable baseline while learning task-
-specific improvements.
+Training Approach:
+    - HH outputs offsets relative to default standing pose
+    - Output 0 = default standing pose (stable starting point)
+    - HH learns to produce walking motion from scratch
+    - HST pretrained policy is NOT used during training (to avoid reward conflicts)
+
+The key insight is that HST's pretrained policy was trained with specific
+npy trajectory rewards. Using it during HH training creates conflicts.
+Instead, HH learns directly using only task rewards (tracking_lin_vel).
 """
 
 import torch
@@ -33,19 +37,23 @@ class HumanPlusEnv:
     This environment wraps the HST (Humanoid Shadowing Transformer) environment
     from humanplus and exposes it to the HARL multi-agent RL framework.
     
-    The key design is RESIDUAL POLICY LEARNING:
-    - HST policy generates stable baseline actions
-    - HH policy outputs corrections/modifications to these actions
-    - Final action = HST_baseline + HH_correction
+    IMPORTANT: We do NOT use the pretrained HST policy during training!
     
-    This allows HH to learn improvements while maintaining HST's stability.
+    The reason is that HST was trained with npy trajectory rewards (target_jt),
+    and using HST during HH training creates a conflict:
+    - HST wants to follow npy trajectories
+    - HH wants to learn its own walking behavior
+    - These objectives conflict, causing rewards to decrease
+    
+    Instead, HH directly outputs target joint offsets, which are converted
+    to absolute positions and sent to the PD controller.
     
     Attributes:
         n_envs: Number of parallel environments
         n_agents: Number of agents (1 for single humanoid)
         num_dofs: Number of degrees of freedom (19 for H1 robot)
         observation_space: Observation space for each agent
-        action_space: Action space for each agent (19-dim action corrections)
+        action_space: Action space for each agent (19-dim joint offsets)
         share_observation_space: Shared observation space
     """
     
@@ -239,9 +247,9 @@ class HumanPlusEnv:
             for _ in range(self.n_agents)
         ]
         
-        # Action space: 19-dim action CORRECTIONS on top of HST baseline
+        # Action space: 19-dim joint position OFFSETS from default pose
         # Using smaller range [-0.5, 0.5] for stable learning
-        # Output 0 = use HST's baseline action unchanged
+        # Output 0 = default standing pose (safe starting point)
         action_scale = self.env_args.get("action_scale", 0.5)
         self.action_scale = action_scale
         self.action_space = [
@@ -399,12 +407,18 @@ class HumanPlusEnv:
         """
         Execute one environment step.
         
-        NEW APPROACH: HH outputs action CORRECTIONS on top of HST's base actions.
-        This allows HH to learn while leveraging HST's stable baseline behavior.
+        HH outputs joint position OFFSETS from the default pose.
+        These are converted to absolute target joint positions and sent 
+        directly to the environment's PD controller (NOT through HST policy).
+        
+        Why not use HST policy?
+        - HST was trained with npy trajectory rewards
+        - Using HST during HH training causes reward conflicts
+        - HH should learn fresh walking behavior using only task rewards
         
         Args:
-            actions: Action corrections from HH policy, shape (n_envs, n_agents, 19)
-                     These are ADDED to HST's baseline actions
+            actions: Joint position offsets from HH policy, shape (n_envs, n_agents, 19)
+                     Range: [-action_scale, action_scale] (default [-0.5, 0.5])
             
         Returns:
             obs: Next observations, shape (n_envs, n_agents, obs_dim)
@@ -419,30 +433,35 @@ class HumanPlusEnv:
         # Convert actions to torch tensor if needed
         # actions shape: (n_envs, n_agents, 19) -> (n_envs, 19)
         if isinstance(actions, np.ndarray):
-            action_corrections = torch.from_numpy(actions[:, 0, :]).float().to(self.device)
+            action_offsets = torch.from_numpy(actions[:, 0, :]).float().to(self.device)
         else:
-            action_corrections = actions[:, 0, :].float().to(self.device)
+            action_offsets = actions[:, 0, :].float().to(self.device)
         
-        # Get HST's baseline actions (the stable policy output)
-        if hasattr(self, 'hst_policy') and self.hst_policy is not None:
-            with torch.no_grad():
-                # Get observation history from environment
-                obs_history = self.env.obs_history_buf if hasattr(self.env, 'obs_history_buf') else None
-                if obs_history is not None:
-                    hst_base_actions = self.hst_policy.act_inference(obs_history)
-                else:
-                    hst_base_actions = torch.zeros(self.n_envs, self.num_dofs, device=self.device)
+        # HH outputs OFFSETS from default pose
+        # Convert to absolute target joint positions
+        if hasattr(self.env, 'default_dof_pos') and self.env.default_dof_pos is not None:
+            default_pos = self.env.default_dof_pos
+            if not isinstance(default_pos, torch.Tensor):
+                default_pos = torch.tensor(default_pos, device=self.device, dtype=torch.float32)
+            if default_pos.dim() == 1:
+                default_pos = default_pos.unsqueeze(0)
+            # Compute absolute target joint positions
+            target_joints = default_pos + action_offsets
         else:
-            # Without pretrained HST, use zero baseline
-            hst_base_actions = torch.zeros(self.n_envs, self.num_dofs, device=self.device)
+            # Fallback: treat offsets as absolute targets
+            target_joints = action_offsets
         
-        # Combine HST baseline with HH corrections
-        # HH learns to output corrections that improve upon HST's baseline
-        final_actions = hst_base_actions + action_corrections
+        # IMPORTANT: Update environment's target_jt so the reward function
+        # can compute tracking rewards correctly (if target_jt reward is enabled)
+        if hasattr(self.env, 'target_jt'):
+            self.env.target_jt = target_joints.clone()
+        if hasattr(self.env, 'delayed_obs_target_jt'):
+            self.env.delayed_obs_target_jt = target_joints.clone()
         
-        # Step the HST environment with combined actions
-        # HST step() returns (obs_history_buf, privileged_obs, rew_buf, reset_buf, extras)
-        step_result = self.env.step(final_actions)
+        # Send target joint positions directly to the environment
+        # The environment's PD controller will track these positions
+        # Note: We send target positions, NOT HST actions
+        step_result = self.env.step(target_joints)
         obs_history = step_result[0]
         rewards = step_result[2]
         dones = step_result[3]

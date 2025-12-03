@@ -1,53 +1,53 @@
 # HH-HumanPlus 分层控制集成指南
 
-本指南说明如何将 HH (HARL) 作为上层策略，通过残差学习改进 HumanPlus HST 的行为。
+本指南说明如何将 HH (HARL) 作为上层策略，直接控制 H1 人形机器人行走。
 
-## 架构概述 (残差策略学习)
+## 架构概述
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    上层: HH (HARL框架)                          │
 │  输入: 84维观测 (姿态、速度、关节状态等)                         │
-│  输出: 19维动作校正量 (action corrections)                       │
+│  输出: 19维关节位置偏移量 (相对于默认站立姿态)                    │
 │  动作范围: [-0.5, 0.5] (可配置)                                  │
+│  输出0 = 保持默认站立姿态                                        │
 │  算法: HAPPO/HATRPO/HASAC等                                     │
 └──────────────────────────────┬──────────────────────────────────┘
-                               │ action_corrections (19维)
+                               │ action_offsets (19维)
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│           动作融合: final = HST_baseline + corrections          │
+│      位置计算: target_joint = default_pose + offset             │
 │                                                                  │
-│  HST策略(预训练) ──→ baseline_actions ──┬──→ final_actions      │
-│                                          │                       │
-│  HH策略(学习中) ──→ corrections ─────────┘                       │
+│  default_dof_pos ─────┬───→ target_joint_positions             │
+│  (站立姿态)            │                                         │
+│                        │                                         │
+│  HH输出 ─────→ offset ─┘                                        │
 └──────────────────────────────┬──────────────────────────────────┘
-                               │ final_actions (19维)
+                               │ target_joint_positions (19维)
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                   IsaacGym 物理仿真                              │
-│  H1 人形机器人 (19自由度) + 地形                                 │
+│  H1 人形机器人 (19自由度) + PD控制器                             │
 │  返回: obs, reward, done                                         │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## 关键设计：残差策略学习
+## 重要说明：为什么不使用预训练的HST策略
 
-这是一种**残差策略学习**方法：
-- **HST策略**提供稳定的基线动作（已预训练）
-- **HH策略**学习在此基础上的**校正/改进**
-- 最终动作 = HST基线 + HH校正
-- 输出0表示完全采用HST的动作，无校正
+在阶段2训练中，我们**不使用**预训练的HST策略网络，原因如下：
 
-这种设计的优点：
-1. **训练更稳定**：HH从"不做任何改变"开始学习
-2. **保持HST优势**：利用HST预训练的稳定行为
-3. **渐进式改进**：HH学习任务特定的优化
+1. **奖励冲突**: HST是用npy轨迹文件训练的，其奖励函数包含`target_jt`奖励，
+   惩罚机器人偏离这些预设轨迹。
+2. **目标矛盾**: 当HH学习自己的行走策略时，机器人运动必然偏离npy轨迹，
+   导致`target_jt`奖励持续下降，即使任务表现在改善。
+3. **简化训练**: 直接让HH学习输出关节目标位置，由PD控制器跟踪，
+   避免了复杂的策略级联问题。
 
 ## 训练流程
 
-### 阶段1: 预训练HST (可与阶段2并行)
+### 阶段1: 预训练HST (可选)
 
-在 humanplus 目录下训练 HST:
+如果需要使用HST策略，在 humanplus 目录下训练:
 
 ```bash
 cd /path/to/humanplus/HST/legged_gym
@@ -55,46 +55,32 @@ cd /path/to/humanplus/HST/legged_gym
 # 训练HST (使用预录制的人体动作数据)
 python scripts/train.py --run_name hst_pretrain --headless --sim_device cuda:0 --rl_device cuda:0
 
-# 训练完成后，模型保存在 logs/h1/hst_pretrain/ 目录下
+# 训练完成后，模型保存在 logs/rough_h1/hst_pretrain/ 目录下
 ```
 
-### 阶段2: 训练上层HH策略 (可与阶段1并行)
+### 阶段2: 训练上层HH策略 (推荐方式)
 
-在 HH 目录下训练上层策略:
+在 HH 目录下直接训练上层策略，**无需使用预训练HST**:
 
 ```bash
 cd /path/to/HH/examples
 
-# 使用HAPPO算法训练（动作为偏移量，范围[-0.5, 0.5]）
-python train.py --algo happo --env humanplus --exp_name hh_upper_layer \
+# 使用HAPPO算法训练（推荐配置）
+python train.py --algo happo --env humanplus --exp_name hh_walking \
     --humanplus_path /path/to/humanplus \
     --headless true \
     --use_pretrained_hst false \
     --training_phase 2
 
 # 可选：调整动作范围（更小的范围=更保守的动作）
-python train.py --algo happo --env humanplus --exp_name hh_upper_layer \
+python train.py --algo happo --env humanplus --exp_name hh_walking \
     --humanplus_path /path/to/humanplus \
     --action_scale 0.3
-
-# 或使用其他算法
-python train.py --algo hasac --env humanplus --exp_name hh_upper_hasac
 ```
 
-### 阶段3: 联合微调
-
-当HST和上层HH都训练好后，进行联合微调:
-
-```bash
-cd /path/to/HH/examples
-
-python train.py --algo happo --env humanplus --exp_name joint_finetuning \
-    --humanplus_path /path/to/humanplus \
-    --hst_checkpoint /path/to/humanplus/HST/logs/h1/hst_pretrain/model.pt \
-    --use_pretrained_hst true \
-    --freeze_hst false \
-    --training_phase 3
-```
+**关键配置**:
+- `use_pretrained_hst: false` - 不使用HST策略网络
+- `disable_target_jt_reward: true` - 禁用轨迹跟踪奖励（默认启用）
 
 ## 配置说明
 
@@ -114,40 +100,15 @@ device: "cuda:0"
 # Episode配置
 episode_length: 1000
 
-# HST配置
-use_pretrained_hst: true
-hst_checkpoint: /path/to/hst/model.pt
-freeze_hst: true  # 阶段2设为true，阶段3设为false
+# HST配置 - 阶段2推荐设置
+use_pretrained_hst: false  # 不使用HST策略
+freeze_hst: true
 
-# 训练阶段
-training_phase: 2  # 1=仅HST, 2=仅HH, 3=联合训练
-```
+# 动作空间配置
+action_scale: 0.5  # 偏移量范围 [-0.5, 0.5]
 
-### 算法配置
-
-推荐使用 HAPPO 或 HASAC:
-
-```bash
-# HAPPO (on-policy)
-python train.py --algo happo --env humanplus --exp_name test
-
-# HASAC (off-policy, 样本效率更高)
-python train.py --algo hasac --env humanplus --exp_name test
-```
-
-## 渲染与视频保存
-
-训练完成后，生成可视化视频:
-
-```bash
-cd /path/to/HH/examples
-
-# 设置渲染模式
-python train.py --algo happo --env humanplus --exp_name render_test \
-    --use_render true \
-    --model_dir /path/to/trained/models \
-    --headless false \
-    --render_episodes 5
+# 奖励配置 - 关键！
+disable_target_jt_reward: true  # 必须禁用，否则奖励会下降
 ```
 
 ## 观测空间说明
@@ -162,11 +123,11 @@ python train.py --algo happo --env humanplus --exp_name render_test \
 | `dof_pos - default` | 19 | 当前关节位置偏差 |
 | `dof_vel` | 19 | 关节速度 |
 | `actions` | 19 | 上一步动作 |
-| `target_jt` | 19 | 目标关节位置 (来自上层) |
+| `target_jt` | 19 | 目标关节位置 |
 
 ## 动作空间说明
 
-上层HH策略输出 (19维目标关节位置):
+HH策略输出19维关节位置**偏移量** (相对于默认站立姿态):
 
 | 关节组 | 关节名称 | 索引 |
 |--------|----------|------|
@@ -176,62 +137,39 @@ python train.py --algo happo --env humanplus --exp_name render_test \
 | 左臂 | shoulder_pitch, shoulder_roll, shoulder_yaw, elbow | 11-14 |
 | 右臂 | shoulder_pitch, shoulder_roll, shoulder_yaw, elbow | 15-18 |
 
+**动作解释**:
+- 输出 0 = 保持默认站立姿态
+- 输出范围 [-0.5, 0.5] (可通过 action_scale 调整)
+- 实际目标位置 = default_dof_pos + offset
+
 ## 奖励函数
 
-使用HST环境中定义的任务奖励:
+使用HST环境中定义的任务奖励 (**`target_jt`已禁用**):
 
-- `tracking_lin_vel`: 线速度跟踪奖励 (**阶段2主要优化目标**)
-- `tracking_ang_vel`: 角速度跟踪奖励 (**阶段2主要优化目标**)
-- `target_jt`: 目标关节位置跟踪奖励 (**阶段2时自动禁用！**)
-- `feet_air_time`: 步态奖励
-- 各种惩罚项: 力矩、碰撞、关节限位等
-
-**重要**: 在分层训练阶段2中，`target_jt`奖励会自动禁用。这是因为：
-- `target_jt`奖励惩罚机器人关节偏离npy轨迹文件中的目标位置
-- 当HH学习输出自己的控制策略时，这会导致奖励持续下降
-- 禁用后，HH只根据任务目标（`tracking_lin_vel`, `tracking_ang_vel`）学习
-
-如需手动启用/禁用，可以设置:
-```bash
---disable_target_jt_reward false  # 启用target_jt奖励
---disable_target_jt_reward true   # 禁用（默认）
-```
-
-## 文件结构
-
-```
-HH/
-├── harl/
-│   ├── envs/
-│   │   └── humanplus/
-│   │       ├── __init__.py
-│   │       ├── humanplus_env.py      # 环境wrapper
-│   │       └── humanplus_logger.py   # 日志记录器
-│   ├── configs/
-│   │   └── envs_cfgs/
-│   │       └── humanplus.yaml        # 环境配置
-│   └── utils/
-│       ├── envs_tools.py             # 已更新，支持humanplus
-│       └── configs_tools.py          # 已更新，支持humanplus
-├── examples/
-│   └── train.py                      # 已更新，支持humanplus
-└── docs/
-    └── HUMANPLUS_INTEGRATION.md      # 本文档
-```
+- ✅ `tracking_lin_vel`: 线速度跟踪奖励 (主要优化目标)
+- ✅ `tracking_ang_vel`: 角速度跟踪奖励 (主要优化目标)
+- ✅ `feet_air_time`: 步态奖励
+- ✅ 各种惩罚项: 力矩、碰撞、关节限位等
+- ❌ `target_jt`: 轨迹跟踪奖励 (**已禁用！**)
 
 ## 常见问题
 
-### Q: IsaacGym导入错误
-A: 确保在PyTorch之前导入isaacgym。代码已自动处理此问题。
+### Q: 为什么奖励一直下降？
 
-### Q: 找不到humanplus模块
-A: 设置正确的 `humanplus_path` 参数指向humanplus安装目录。
+A: 最可能的原因：
+1. `target_jt`奖励未禁用 - 检查日志是否显示 "Disabled target_jt reward"
+2. 使用了预训练HST - 设置 `use_pretrained_hst: false`
 
-### Q: 训练不稳定
-A: 建议先单独预训练HST至收敛，再训练上层HH策略。
+### Q: 如何调整学习难度？
 
-### Q: 如何使用我已经训练好的17维扭矩输出策略？
-A: 需要修改动作空间维度并调整输出映射。由于HST期望19维目标关节位置，建议重新训练。
+A: 调整 `action_scale`:
+- 更小的值 (如 0.2): 更保守的动作，训练更稳定
+- 更大的值 (如 0.8): 更大的动作幅度，学习更快但可能不稳定
+
+### Q: 可以在阶段3使用HST吗？
+
+A: 理论上可以，但需要确保HST是用随机目标位置训练的（而非npy轨迹）。
+当前预训练的HST使用npy轨迹，不适合作为下层控制器。
 
 ## 参考
 
