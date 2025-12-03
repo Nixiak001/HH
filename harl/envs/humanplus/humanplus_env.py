@@ -240,6 +240,62 @@ class HumanPlusEnv:
             for _ in range(self.n_agents)
         ]
     
+    def _update_obs_with_target(self, target_jt):
+        """
+        Update the observation buffer to include new target joint positions.
+        
+        This is critical for the hierarchical control to work correctly.
+        The HST observation vector contains delayed_obs_target_jt at positions 46-64
+        (after base_orn_rp[2], base_ang_vel[3], commands[3], dof_pos-default[19], 
+        dof_vel[19] = 2+3+3+19+19=46).
+        
+        Args:
+            target_jt: New target joint positions, shape (n_envs, num_dofs)
+        """
+        # Update delayed_obs_target_jt in environment
+        if hasattr(self.env, 'delayed_obs_target_jt'):
+            self.env.delayed_obs_target_jt = target_jt.clone()
+        
+        # The HST obs_buf contains:
+        # [0:2] base_orn_rp (roll, pitch)
+        # [2:5] base_ang_vel (3)
+        # [5:8] commands (3)
+        # [8:27] dof_pos - default_dof_pos (19)
+        # [27:46] dof_vel (19)
+        # [46:65] delayed_obs_target_jt (19)
+        # [65:84] last_actions (19)
+        # Total: 84
+        
+        target_jt_start_idx = 46
+        target_jt_end_idx = 65
+        
+        # Update obs_buf with new target joint positions
+        if hasattr(self.env, 'obs_buf') and self.env.obs_buf is not None:
+            # Normalize target_jt relative to default_dof_pos (same as HST does)
+            if hasattr(self.env, 'default_dof_pos') and self.env.default_dof_pos is not None:
+                default_pos = self.env.default_dof_pos
+                if not isinstance(default_pos, torch.Tensor):
+                    default_pos = torch.tensor(default_pos, device=self.device, dtype=torch.float32)
+                if default_pos.dim() == 1:
+                    default_pos = default_pos.unsqueeze(0)
+                # HST stores target_jt - default_dof_pos in obs_buf
+                target_offset = target_jt - default_pos
+            else:
+                target_offset = target_jt
+            
+            # Update the target joint portion in obs_buf
+            self.env.obs_buf[:, target_jt_start_idx:target_jt_end_idx] = target_offset
+        
+        # Update obs_history_buf with new observation
+        # obs_history_buf shape: (n_envs, context_len, obs_dim)
+        if hasattr(self.env, 'obs_history_buf') and self.env.obs_history_buf is not None:
+            if self.env.obs_history_buf.dim() == 3:
+                # Update the last frame in history (most recent observation)
+                if hasattr(self.env, 'obs_buf') and self.env.obs_buf is not None:
+                    # Shift history and add new observation
+                    self.env.obs_history_buf[:, :-1] = self.env.obs_history_buf[:, 1:].clone()
+                    self.env.obs_history_buf[:, -1] = self.env.obs_buf.clone()
+    
     def _load_pretrained_hst(self):
         """Load pretrained HST policy weights."""
         if self.hst_checkpoint is None:
@@ -374,6 +430,11 @@ class HumanPlusEnv:
             self.env.target_jt = target_jt
         if hasattr(self.env, 'delayed_obs_target_jt'):
             self.env.delayed_obs_target_jt = target_jt
+        
+        # CRITICAL: Update the observation buffer to include the new target positions
+        # The HST observation vector includes delayed_obs_target_jt (19 dims)
+        # We need to manually update obs_buf with the new target before HST uses it
+        self._update_obs_with_target(target_jt)
         
         # If using pretrained HST, get HST actions based on target poses
         if hasattr(self, 'hst_policy') and self.hst_policy is not None:
