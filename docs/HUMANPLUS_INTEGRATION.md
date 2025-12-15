@@ -171,6 +171,40 @@ A: 调整 `action_scale`:
 A: 理论上可以，但需要确保HST是用随机目标位置训练的（而非npy轨迹）。
 当前预训练的HST使用npy轨迹，不适合作为下层控制器。
 
+### Q: 如何渲染/可视化训练好的模型？
+
+A: 使用以下命令渲染已训练的模型：
+
+```bash
+# 方法1: 使用test_mode（推荐）
+python train.py --algo happo --env humanplus --exp_name hh_walking \
+    --humanplus_path /HUBU-AI006/lkx/HH/humanplus \
+    --headless false \
+    --test_mode \
+    --model_dir /path/to/saved_models/hh_walking
+
+# 方法2: 在配置文件中设置
+# 编辑 harl/configs/envs_cfgs/humanplus.yaml:
+# headless: false
+# num_envs: 1  # 渲染时建议只用一个环境
+# 然后运行评估
+```
+
+**渲染配置说明**:
+- `headless: false` - 启用图形界面渲染
+- `num_envs: 1` - 渲染时只创建一个环境（避免多窗口）
+- `test_mode: true` - 测试模式，不进行训练
+- `model_dir` - 指向保存的模型检查点目录
+
+**保存视频** (如果环境支持):
+```bash
+# 在 humanplus.yaml 中添加:
+# record_video: true
+# video_interval: 1000  # 每1000步保存一次视频
+```
+
+**注意**: IsaacGym 的渲染需要有显示设备。在无头服务器上，可以使用 xvfb 虚拟显示。
+
 ## 参考
 
 - [HARL论文](https://jmlr.org/papers/v25/23-0488.html)
