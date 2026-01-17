@@ -52,6 +52,11 @@ def make_train_env(env_name, seed, n_threads, env_args):
         from harl.envs.dexhands.dexhands_env import DexHandsEnv
 
         return DexHandsEnv({"n_threads": n_threads, **env_args})
+    
+    if env_name == "humanplus":
+        from harl.envs.humanplus.humanplus_env import HumanPlusEnv
+
+        return HumanPlusEnv({"n_threads": n_threads, **env_args})
 
     def get_env_fn(rank):
         def init_env():
@@ -110,6 +115,9 @@ def make_train_env(env_name, seed, n_threads, env_args):
 def make_eval_env(env_name, seed, n_threads, env_args):
     """Make env for evaluation."""
     if env_name == "dexhands":  # dexhands does not support running multiple instances
+        raise NotImplementedError
+    
+    if env_name == "humanplus":  # humanplus uses IsaacGym, similar to dexhands
         raise NotImplementedError
 
     def get_env_fn(rank):
@@ -214,6 +222,14 @@ def make_render_env(env_name, seed, env_args):
         )
         manual_delay = False
         env_num = 64
+    elif env_name == "humanplus":
+        from harl.envs.humanplus.humanplus_env import HumanPlusEnv
+
+        env = HumanPlusEnv({"n_threads": 64, "headless": False, **env_args})
+        manual_render = False  # humanplus renders via IsaacGym automatically
+        manual_expand_dims = False  # uses parallel envs
+        manual_delay = False
+        env_num = 64
     elif env_name == "lag":
         from harl.envs.lag.lag_env import LAGEnv
 
@@ -254,6 +270,8 @@ def get_num_agents(env, env_args, envs):
     elif env == "football":
         return envs.n_agents
     elif env == "dexhands":
+        return envs.n_agents
+    elif env == "humanplus":
         return envs.n_agents
     elif env == "lag":
         return envs.n_agents
