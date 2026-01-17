@@ -1,0 +1,22 @@
+{
+  "env": "mamujoco",
+  "scenario": "Humanoid-v2",
+  "agent_conf": "17x1",
+  "num_env_steps": 10000000,
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "exp_name": "comparison",
+  "algorithms": [
+    "happo",
+    "mappo",
+    "hatd3"
+  ],
+  "configs": [
+    "/home/runner/work/HH/HH/comparison_configs/mamujoco_Humanoid-v2_17x1/happo_comparison.json",
+    "/home/runner/work/HH/HH/comparison_configs/mamujoco_Humanoid-v2_17x1/mappo_comparison.json",
+    "/home/runner/work/HH/HH/comparison_configs/mamujoco_Humanoid-v2_17x1/hatd3_comparison.json"
+  ]
+}
