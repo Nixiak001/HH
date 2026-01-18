@@ -43,7 +43,25 @@ This will:
 
 **Note**: Each run may take several hours depending on your hardware. The Humanoid-v2-17x1 environment is particularly compute-intensive.
 
-### Step 3: Analyze Results
+### Step 3: Monitor Progress (While Running)
+
+**NEW!** View partial results while experiments are still running:
+
+```bash
+python scripts/plot_partial_results.py \
+    --results_dir comparison_results/mamujoco_Humanoid-v2_17x1
+```
+
+This generates:
+- `partial_analysis/partial_comparison.png` - Comparison plot with available data
+- `partial_analysis/partial_individual_runs.png` - Individual seed curves
+- `partial_analysis/progress_report.md` - Current progress summary
+
+Run this script multiple times as experiments progress to see updated results.
+
+### Step 4: Analyze Final Results
+
+After all experiments complete:
 
 ```bash
 python scripts/analyze_comparison_results.py \
@@ -119,11 +137,32 @@ python scripts/generate_comparison_configs.py \
     --exp_name my_experiment
 ```
 
+### Monitoring Partial Results
+
+While experiments are running, you can visualize partial results:
+
+```bash
+python scripts/plot_partial_results.py \
+    --results_dir comparison_results/mamujoco_Humanoid-v2_17x1
+```
+
+This works even if:
+- Not all seeds have started
+- Some experiments are still in progress
+- Different algorithms have different amounts of data
+
+You can run this command multiple times to see progress updates.
+
 ### Analyzing Specific Metrics
 
 ```bash
 python scripts/analyze_comparison_results.py \
     --exp_dir comparison_results/mamujoco_Humanoid-v2_17x1 \
+    --metric train/average_episode_rewards
+
+# Or for partial results
+python scripts/plot_partial_results.py \
+    --results_dir comparison_results/mamujoco_Humanoid-v2_17x1 \
     --metric train/average_episode_rewards
 ```
 
@@ -134,7 +173,8 @@ python scripts/analyze_comparison_results.py \
 ├── scripts/
 │   ├── generate_comparison_configs.py    # Config generator
 │   ├── run_comparison_experiment.sh      # Batch runner
-│   └── analyze_comparison_results.py     # Results analyzer
+│   ├── analyze_comparison_results.py     # Final results analyzer
+│   └── plot_partial_results.py           # Partial results visualizer (NEW!)
 ├── comparison_configs/
 │   └── mamujoco_Humanoid-v2_17x1/
 │       ├── happo_comparison.json
@@ -146,7 +186,11 @@ python scripts/analyze_comparison_results.py \
         ├── happo/
         ├── mappo/
         ├── hatd3/
-        └── analysis/
+        ├── partial_analysis/              # Generated during training
+        │   ├── partial_comparison.png
+        │   ├── partial_individual_runs.png
+        │   └── progress_report.md
+        └── analysis/                       # Generated after completion
             ├── learning_curves.png
             ├── comparison_report.md
             └── statistics.json

@@ -60,7 +60,28 @@ python train.py \
     --seed 1
 ```
 
-#### 第3步: 分析结果
+#### 第3步: 查看训练进度（实验进行中）
+
+**新功能！** 实验还在运行时就可以查看部分结果：
+
+```bash
+python scripts/plot_partial_results.py \
+    --results_dir comparison_results/mamujoco_Humanoid-v2_17x1
+```
+
+**输出**:
+- `partial_analysis/partial_comparison.png` - 用已有数据生成的对比图
+- `partial_analysis/partial_individual_runs.png` - 各个种子的学习曲线
+- `partial_analysis/progress_report.md` - 当前进度摘要
+
+**特点**:
+- 即使实验没跑完也能看到结果
+- 可以多次运行查看最新进度
+- 自动处理不完整的数据
+
+#### 第4步: 分析最终结果
+
+所有实验完成后：
 
 ```bash
 python scripts/analyze_comparison_results.py \
@@ -146,15 +167,47 @@ A: 在配置文件中减少并行环境数量：
 
 ### Q: 如何查看训练进度？
 
-A: 实时日志保存在：
+A: 有多种方法：
+
+**方法1: 查看实时日志**
 ```bash
 tail -f comparison_results/mamujoco_Humanoid-v2_17x1/happo_seed1_log.txt
 ```
 
-或使用 TensorBoard:
+**方法2: 使用 TensorBoard**
 ```bash
 tensorboard --logdir comparison_results/mamujoco_Humanoid-v2_17x1
 ```
+
+**方法3: 生成部分结果图表（推荐！）**
+```bash
+python scripts/plot_partial_results.py \
+    --results_dir comparison_results/mamujoco_Humanoid-v2_17x1
+```
+
+这个方法会生成：
+- 当前学习曲线对比图
+- 每个算法和种子的详细曲线
+- 进度报告（包含当前步数、最新奖励等）
+
+可以随时运行查看最新进度，即使实验还没完成！
+
+### Q: 实验还没跑完，想看看效果怎么办？
+
+A: 使用部分结果可视化工具：
+
+```bash
+python scripts/plot_partial_results.py \
+    --results_dir comparison_results/mamujoco_Humanoid-v2_17x1
+```
+
+**优点**:
+- 不需要等实验全部完成
+- 自动处理不完整的数据
+- 可以多次运行看到进度更新
+- 提前发现问题（如某个算法表现异常）
+
+**输出位置**: `comparison_results/mamujoco_Humanoid-v2_17x1/partial_analysis/`
 
 ### Q: 实验中断了怎么办？
 
